@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cakar Ayam Empire</title>
+  <link rel="icon" type="image/png" href="https://i.ibb.co/THK2w2r/kecik-empire-logo.png">
+  <style>
+    /* RESET */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Poppins', sans-serif;
+    }
+
+    body {
+      background-color: #0b0b0b;
+      color: #fff;
+      scroll-behavior: smooth;
+    }
+
+    /* NAVBAR */
+    .navbar {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      background: #111;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 15px 40px;
+      z-index: 999;
+      border-bottom: 2px solid gold;
+      box-shadow: 0 0 10px rgba(255, 215, 0, 0.2);
+    }
+
+    .navbar .logo {
+      font-weight: 700;
+      font-size: 1.4rem;
+      color: gold;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .nav-links {
+      list-style: none;
+      display: flex;
+      gap: 25px;
+    }
+
+    .nav-links a {
+      text-decoration: none;
+      color: white;
+      font-weight: 500;
+      transition: 0.3s;
+    }
+
+    .nav-links a:hover {
+      color: gold;
+    }
+
+    #menu-toggle {
+      display: none;
+      background: none;
+      color: gold;
+      font-size: 1.8rem;
+      border: none;
+    }
+
+    /* HERO */
+    .hero {
+      background: url('https://i.ibb.co/3S2CPsG/bg-cakar-ayam.jpg') center/cover no-repeat;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 0 20px;
+      color: #fff;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100vh;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.6);
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      animation: fadeIn 1.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from {opacity: 0; transform: translateY(20px);}
+      to {opacity: 1; transform: translateY(0);}
+    }
+
+    .hero-content h1 {
+      font-size: 2.8rem;
+      background: linear-gradient(90deg, #d4af37, #fff8dc, #d4af37);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-size: 200%;
+      animation: shimmer 4s infinite linear;
+      margin-bottom: 15px;
+    }
+
+    @keyframes shimmer {
+      0% {background-position: -200%;}
+      100% {background-position: 200%;}
+    }
+
+    .hero-content p {
+      font-size: 1.2rem;
+      margin-bottom: 25px;
+      color: #f8f8f8;
+    }
+
+    .btn {
+      background: gold;
+      color: #111;
+      padding: 12px 25px;
+      border-radius: 5px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: 0.3s;
+      display: inline-block;
+    }
+
+    .btn:hover {
+      background: #d4af37;
+      color: #fff;
+      box-shadow: 0 0 15px rgba(212, 175, 55, 0.5);
+    }
+
+    /* PRODUK */
+    .produk-section {
+      padding: 80px 20px;
+      background: #111;
+      text-align: center;
+      animation: fadeIn 1s ease-in-out;
+    }
+
+    .produk-section h2 {
+      font-size: 2.2rem;
+      color: gold;
+      margin-bottom: 40px;
+    }
+
+    .produk-container {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 25px;
+    }
+
+    .produk-card {
+      background: #1a1a1a;
+      border-radius: 10px;
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+      width: 300px;
+      transition: 0.3s;
+      overflow: hidden;
+      transform: scale(1);
+    }
+
+    .produk-card:hover {
+      transform: scale(1.05);
+      border: 1px solid gold;
+      box-shadow: 0 0 20px rgba(255, 215, 0, 0.3);
+    }
+
+    .produk-card img {
+      width: 100%;
+      border-radius: 10px 10px 0 0;
+    }
+
+    .produk-card h3 {
+      margin: 15px 0 10px;
+      color: gold;
+    }
+
+    .produk-card p {
+      font-size: 0.95rem;
+      color: #ccc;
+      margin: 0 15px 10px;
+    }
+
+    .price {
+      display: block;
+      font-weight: 700;
+      color: gold;
+      margin-bottom: 15px;
+    }
+
+    /* FORM TEMPAHAN */
+    .form-section {
+      background: #0b0b0b;
+      padding: 80px 20px;
+      text-align: center;
+    }
+
+    .form-section h2 {
+      font-size: 2.2rem;
+      color: gold;
+      margin-bottom: 30px;
+    }
+
+    form {
+      max-width: 400px;
+      margin: 0 auto;
+      text-align: left;
+      background: #1a1a1a;
+      padding: 25px;
+      border-radius: 10px;
+      border: 1px solid #333;
+      box-shadow: 0 0 15px rgba(255, 215, 0, 0.1);
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 600;
+      color: gold;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 15px;
+      border-radius: 5px;
+      border: 1px solid #555;
+      background: #111;
+      color: #fff;
+    }
+
+    button[type="submit"] {
+      width: 100%;
+      background: gold;
+      color: #111;
+      border: none;
+      padding: 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: 0.3s;
+    }
+
+    button[type="submit"]:hover {
+      background: #d4af37;
+      color: #fff;
+      box-shadow: 0 0 10px rgba(212, 175, 55, 0.4);
+    }
+
+    /* WHATSAPP FLOAT */
+    .whatsapp-float {
+      position: fixed;
+      bottom: 25px;
+      right: 25px;
+      background: gold;
+      color: #111;
+      border-radius: 50%;
+      width: 60px;
+      height: 60px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 28px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+      text-decoration: none;
+      z-index: 999;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% {transform: scale(1);}
+      50% {transform: scale(1.1);}
+      100% {transform: scale(1);}
+    }
+
+    .whatsapp-float:hover {
+      background: #d4af37;
+    }
+
+    /* FOOTER */
+    footer {
+      background: #111;
+      color: gold;
+      text-align: center;
+      padding: 20px;
+      border-top: 1px solid gold;
+      font-size: 0.9rem;
+    }
+
+    /* RESPONSIVE */
+    @media (max-width: 768px) {
+      .nav-links {
+        display: none;
+        flex-direction: column;
+        background: #111;
+        position: absolute;
+        top: 60px;
+        right: 0;
+        width: 200px;
+        padding: 15px 0;
+        border: 1px solid gold;
+      }
+
+      .nav-links.active {
+        display: flex;
+      }
+
+      #menu-toggle {
+        display: block;
+      }
+
+      .produk-container {
+        flex-direction: column;
+        align-items: center;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAVBAR -->
+  <header class="navbar">
+    <div class="logo">🐔 Cakar Ayam Empire</div>
+    <nav>
+      <ul class="nav-links">
+        <li><a href="#home">Home</a></li>
+        <li><a href="#produk">Produk</a></li>
+        <li><a href="#tempahan">Tempahan</a></li>
+      </ul>
+    </nav>
+    <button id="menu-toggle">☰</button>
+  </header>
+
+  <!-- HERO -->
+  <section id="home" class="hero">
+    <div class="hero-content">
+      <h1>Cakar Ayam Premium Dari Kecik Empire</h1>
+      <p>Rangup, pedas dan penuh rasa — kenikmatan yang sukar dilupakan. 🌶️</p>
+      <a href="#produk" class="btn">Lihat Produk</a>
+    </div>
+  </section>
+
+  <!-- PRODUK -->
+  <section id="produk" class="produk-section">
+    <h2>Produk Kami</h2>
+    <div class="produk-container">
+      <div class="produk-card">
+        <img src="https://i.ibb.co/0GfGNYJ/cakar-ayam1.jpg" alt="Cakar Ayam Original">
+        <h3>Cakar Ayam Original</h3>
+        <p>Resepi klasik dengan rempah turun-temurun. Pedas dan rangup!</p>
+        <span class="price">RM10 / pek</span>
+      </div>
+
+      <div class="produk-card">
+        <img src="https://i.ibb.co/XCZLQLf/cakar-ayam2.jpg" alt="Cakar Ayam Super Spicy">
+        <h3>Cakar Ayam Super Spicy</h3>
+        <p>Untuk penggemar pedas tegar. Bakar lidah tapi puas hati!</p>
+        <span class="price">RM12 / pek</span>
+      </div>
+
+      <div class="produk-card">
+        <img src="https://i.ibb.co/S7vKkRc/cakar-ayam3.jpg" alt="Cakar Ayam Sweet Chili">
+        <h3>Cakar Ayam Sweet Chili</h3>
+        <p>Gabungan manis dan pedas ringan. Sesuai untuk semua peringkat umur.</p>
+        <span class="price">RM11 / pek</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- FORM TEMPAHAN -->
+  <section id="tempahan" class="form-section">
+    <h2>Buat Tempahan Sekarang</h2>
+    <form id="orderForm">
+      <label for="nama">Nama Penuh</label>
+      <input type="text" id="nama" name="nama" required>
+
+      <label for="noTel">No. Telefon</label>
+      <input type="tel" id="noTel" name="noTel" required>
+
+      <label for="produkSelect">Pilih Produk</label>
+      <select id="produkSelect" name="produk">
+        <option value="Original">Cakar Ayam Original</option>
+        <option value="Super Spicy">Cakar Ayam Super Spicy</option>
+        <option value="Sweet Chili">Cakar Ayam Sweet Chili</option>
+      </select>
+
+      <label for="kuantiti">Kuantiti (pek)</label>
+      <input type="number" id="kuantiti" name="kuantiti" min="1" required>
+
+      <button type="submit" class="btn">Hantar Tempahan</button>
+    </form>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <p>© 2025 Cakar Ayam Empire | Dibangunkan dengan ✨ oleh Aiman</p>
+  </footer>
+
+  <!-- WHATSAPP BUTTON -->
+  <a href="https://wa.me/60135955317?text=Hai%20saya%20nak%20buat%20tempahan%20Cakar%20Ayam%20Empire!" target="_blank" class="whatsapp-float" title="Tempah Sekarang">💬</a>
+
+  <script>
+    // Toggle menu
+    const menuToggle = document.getElementById('menu-toggle');
+    const navLinks = document.querySelector('.nav-links');
+    menuToggle.addEventListener('click', () => {
+      navLinks.classList.toggle('active');
+    });
+
+    // Form tempahan ke WhatsApp
+    document.getElementById('orderForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const nama = document.getElementById('nama').value;
+      const produk = document.getElementById('produkSelect').value;
+      const kuantiti = document.getElementById('kuantiti').value;
+      const phone = '+60135955317';
+      const message = `Hai, saya ${nama} ingin tempah ${kuantiti} pek Cakar Ayam ${produk}.`;
+      const waLink = `https://wa.me/${phone.replace('+', '')}?text=${encodeURIComponent(message)}`;
+      window.open(waLink, '_blank');
+      e.target.reset();
+    });
+  </script>
+</body>
+</html>
