@@ -1,3 +1,4 @@
+```javascript
 import "dotenv/config";
 
 import express from "express";
@@ -21,10 +22,19 @@ const GEMINI_MODEL =
 const VEO_MODEL =
   process.env.VEO_MODEL || "veo-3.1-fast-generate-preview";
 
-const MAX_RETRIES = 4;
+const MAX_RETRIES = Number(process.env.API_MAX_RETRIES || 4);
+
+const GEMINI_HTTP_TIMEOUT = Number(
+  process.env.GEMINI_HTTP_TIMEOUT || 240000
+);
 
 const ai = GEMINI_API_KEY
-  ? new GoogleGenAI({ apiKey: GEMINI_API_KEY })
+  ? new GoogleGenAI({
+      apiKey: GEMINI_API_KEY,
+      httpOptions: {
+        timeout: GEMINI_HTTP_TIMEOUT
+      }
+    })
   : null;
 
 const jobs = new Map();
@@ -90,7 +100,7 @@ async function smartRetry(label, fn, job = null) {
 
       if (job) {
         job.logs.push(
-          `${label} failed. Retry in ${delay / 1000}s`
+          `${label} failed (${getErrorMessage(error)}). Retry in ${delay / 1000}s`
         );
       }
 
@@ -106,7 +116,7 @@ async function smartRetry(label, fn, job = null) {
 }
 
 // =====================================================
-// FFmpeg
+// FFMPEG
 // =====================================================
 
 let FFMPEG_PATH = process.env.FFMPEG_PATH || "ffmpeg";
@@ -117,6 +127,7 @@ try {
   if (ffmpegStatic.default) {
     FFMPEG_PATH = ffmpegStatic.default;
   }
+
 } catch {
   console.warn(
     "ffmpeg-static unavailable. Using system ffmpeg."
@@ -304,7 +315,7 @@ async function generateVeoScene(scene, job, index) {
 }
 
 // =====================================================
-// FFmpeg VIDEO ASSEMBLY
+// FFMPEG VIDEO ASSEMBLY
 // =====================================================
 
 async function assembleVideo(sceneFiles, output, job) {
@@ -455,7 +466,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "kecik-empire-ai-factory",
-    version: "3.5.0"
+    version: "3.5.1"
   });
 });
 
@@ -463,12 +474,24 @@ app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
     service: "kecik-empire-ai-factory",
-    version: "3.5.0",
+    version: "3.5.1",
     models: {
       storyboard: GEMINI_MODEL,
       video: VEO_MODEL
     },
     time: new Date().toISOString()
+  });
+});
+
+app.get("/api/diagnostics", (req, res) => {
+  res.json({
+    ok: true,
+    version: "3.5.1",
+    geminiKeyConfigured: Boolean(GEMINI_API_KEY),
+    geminiModel: GEMINI_MODEL,
+    veoModel: VEO_MODEL,
+    geminiHttpTimeoutMs: GEMINI_HTTP_TIMEOUT,
+    ffmpegConfigured: Boolean(FFMPEG_PATH)
   });
 });
 
@@ -629,18 +652,13 @@ app.use((error, req, res, next) => {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(
-    `Kecik Empire API V3.5 listening on ${PORT}`
+    `Kecik Empire API V3.5.1 listening on ${PORT}`
   );
 
-  console.log(
-    `Gemini Model: ${GEMINI_MODEL}`
-  );
+  console.log(`Gemini Model: ${GEMINI_MODEL}`);
+  console.log(`Gemini HTTP timeout: ${GEMINI_HTTP_TIMEOUT}ms`);
 
-  console.log(
-    `Veo Model: ${VEO_MODEL}`
-  );
-
-  console.log(
-    `FFmpeg: ${FFMPEG_PATH}`
-  );
+  console.log(`Veo Model: ${VEO_MODEL}`);
+  console.log(`FFmpeg: ${FFMPEG_PATH}`);
 });
+```
