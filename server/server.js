@@ -37,7 +37,7 @@ async function runJob(id,cfg,photos,keyOverride){
  const client=keyOverride?new GoogleGenAI({apiKey:keyOverride}):ai;
  const prompt=`Create a ${cfg.duration||30}-second ${cfg.ratio||"9:16"} commercial storyboard in JSON. Product: ${cfg.product||"product"}. Tagline: ${cfg.tagline||""}. CTA: ${cfg.cta||""}. Style: ${cfg.style||""}. Music: ${cfg.music||""}. Voice: ${cfg.voice||""}. Direction: ${cfg.extra||""}. Preserve exact product appearance from supplied reference photos; do not invent ingredients or alter packaging. Output {"title":"...","scenes":[{"time":"0-5s","title":"...","visual":"...","veoPrompt":"..."}]}. Return only JSON.`;
  const parts=[{text:prompt},...photos.slice(0,4).map(p=>({inlineData:{mimeType:p.mimeType||"image/jpeg",data:p.data}}))];
- const response=await client.models.generateContent({model:process.env.GEMINI_STORYBOARD_MODEL||"Update Gemini 3.8 Flash model",contents:[{role:"user",parts}],config:{responseMimeType:"application/json"}});
+ const response=await client.models.generateContent({model:process.env.GEMINI_STORYBOARD_MODEL||"gemini-3.0-flash",contents:[{role:"user",parts}],config:{responseMimeType:"application/json"}});
  let story=JSON.parse(response.text);j.storyboard=story;j.totalScenes=story.scenes?.length||0;j.stage="storyboard_ready";j.message="Storyboard ready. Video rendering requires configured Veo workflow.";j.progress=15;
  // Deployment-safe honest state: no fabricated completed MP4.
  j.status="awaiting_video_provider";j.stage="provider_required";j.message="Storyboard generated. Configure Veo rendering adapter and FFmpeg pipeline to create MP4.";
