@@ -1,23 +1,21 @@
 /**
- * KECIK EMPIRE AI FACTORY — BACKEND V3.5
- * Gemini Storyboard + Google Veo + FFmpeg
- * Smart Retry + Job Polling + MP4 Output
- *
- * Requirements:
- * Node.js 20+
- * GEMINI_API_KEY
- * FFmpeg installed
+ * KECIK EMPIRE AI FACTORY
+ * BACKEND V3.5
+ * Gemini + Smart Retry + Veo + FFmpeg
  */
 
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
-const fs = require("fs/promises");
+const fs = require("fs");
 const path = require("path");
 const os = require("os");
+
 const { execFile } = require("child_process");
 const { promisify } = require("util");
+
 const { GoogleGenAI } = require("@google/genai");
+const { Storage } = require("@google-cloud/storage");
 
 const execFileAsync = promisify(execFile);
 
@@ -25,791 +23,974 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-const API_KEY = process.env.GEMINI_API_KEY;
+// ======================================================
+// CONFIGURATION
+// ======================================================
 
-const STORYBOARD_MODEL =
-  process.env.GEMINI_STORYBOARD_MODEL || "gemini-3.8-flash";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+const GEMINI_MODEL =
+  process.env.GEMINI_STORYBOARD_MODEL ||
+  "gemini-3.8-flash";
+
+const GEMINI_FALLBACK_MODEL =
+  process.env.GEMINI_FALLBACK_MODEL ||
+  "gemini-2.5-flash";
 
 const VEO_MODEL =
-  process.env.VEO_MODEL || "veo-3.1-fast-generate-preview";
+  process.env.VEO_MODEL ||
+  "veo-3.1-fast-generate-001";
 
-const MAX_SCENES = Math.min(
-  Number(process.env.MAX_SCENES || 6),
-  8
-);
+const GOOGLE_CLOUD_PROJECT =
+  process.env.GOOGLE_CLOUD_PROJECT;
 
-const JOB_TTL_HOURS =
-  Number(process.env.JOB_TTL_HOURS || 12);
+const GOOGLE_CLOUD_LOCATION =
+  process.env.GOOGLE_CLOUD_LOCATION || "global";
 
-const ai = API_KEY
-  ? new GoogleGenAI({ apiKey: API_KEY })
-  : null;
+const VEO_GCS_BUCKET =
+  process.env.VEO_GCS_BUCKET;
 
-const jobs = new Map();
+const MAX_RETRIES =
+  Number(process.env.SMART_RETRY_MAX || 4);
+
+const JOB_TIMEOUT =
+  20 * 60 * 1000;
+
+// ======================================================
+// EXPRESS
+// ======================================================
 
 app.use(cors({ origin: true }));
 
-app.use(express.json({ limit: "30mb" }));
+app.use(express.json({
+  limit: "35mb"
+}));
 
-app.use(
-  "/outputs",
-  express.static(path.join(__dirname, "outputs"))
-);
+app.use(express.urlencoded({
+  extended: true,
+  limit: "35mb"
+}));
 
-const sleep = ms =>
-  new Promise(resolve => setTimeout(resolve, ms));
+// ======================================================
+// GOOGLE CLIENTS
+// ======================================================
 
-const now = () =>
-  new Date().toISOString();
+const gemini = GEMINI_API_KEY
+  ? new GoogleGenAI({
+      apiKey: GEMINI_API_KEY
+    })
+  : null;
 
-const safeError = error =>
-  error?.message || String(error);
+const veo = GOOGLE_CLOUD_PROJECT
+  ? new GoogleGenAI({
+      vertexai: true,
+      project: GOOGLE_CLOUD_PROJECT,
+      location: GOOGLE_CLOUD_LOCATION
+    })
+  : null;
 
+const storage = new Storage();
 
-/* =========================================
-   SMART RETRY
-========================================= */
+// ======================================================
+// JOB STORAGE
+// ======================================================
 
-function retryable(error) {
-  const status = Number(
-    error?.status || error?.code || 0
+const jobs = new Map();
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function errorMessage(error) {
+  return String(
+    error?.message ||
+    error ||
+    "Unknown error"
   );
+}
 
-  const message =
-    safeError(error).toLowerCase();
+// ======================================================
+// SMART RETRY
+// ======================================================
+
+function isRetryable(error) {
+
+  const message = errorMessage(error).toLowerCase();
 
   return (
-    [408, 429, 500, 502, 503, 504].includes(status) ||
-    [
-      "timeout",
-      "temporarily unavailable",
-      "high demand",
-      "overloaded",
-      "fetch failed",
-      "socket hang up"
-    ].some(text => message.includes(text))
+    message.includes("503") ||
+    message.includes("429") ||
+    message.includes("500") ||
+    message.includes("502") ||
+    message.includes("504") ||
+    message.includes("unavailable") ||
+    message.includes("high demand") ||
+    message.includes("timeout") ||
+    message.includes("temporarily") ||
+    message.includes("resource exhausted")
   );
 }
 
 async function smartRetry(
-  fn,
-  {
-    attempts = 5,
-    base = 2000,
-    cap = 30000
-  } = {}
+  operation,
+  label,
+  job
 ) {
+
   let lastError;
 
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      return await fn(attempt);
-    } catch (error) {
-      lastError = error;
+  for (
+    let attempt = 1;
+    attempt <= MAX_RETRIES;
+    attempt++
+  ) {
 
-      if (
-        attempt === attempts ||
-        !retryable(error)
-      ) {
-        throw error;
+    try {
+
+      if (job) {
+
+        job.message =
+          `${label} - Attempt ${attempt}/${MAX_RETRIES}`;
+
       }
 
-      const wait =
+      return await operation(attempt);
+
+    } catch (error) {
+
+      lastError = error;
+
+      console.error(
+        `[SMART RETRY] ${label}`,
+        errorMessage(error)
+      );
+
+      if (
+        !isRetryable(error) ||
+        attempt === MAX_RETRIES
+      ) {
+
+        throw error;
+
+      }
+
+      const delay =
         Math.min(
-          cap,
-          base * Math.pow(2, attempt - 1)
+          60000,
+          2000 * Math.pow(2, attempt - 1)
         ) +
         Math.floor(Math.random() * 1000);
 
-      console.warn(
-        `[SmartRetry] ${attempt}/${attempts}`,
-        `retry after ${wait}ms`,
-        safeError(error)
-      );
+      if (job) {
 
-      await sleep(wait);
+        job.message =
+          `Temporary error. Retry in ${Math.ceil(delay / 1000)}s`;
+
+      }
+
+      await sleep(delay);
+
     }
+
   }
 
   throw lastError;
 }
 
+// ======================================================
+// JOB UPDATE
+// ======================================================
 
-/* =========================================
-   JOB MANAGEMENT
-========================================= */
+function updateJob(job, data) {
 
-function patch(job, changes) {
-  Object.assign(job, changes, {
-    updatedAt: now()
-  });
+  Object.assign(job, data);
+
+  job.updatedAt =
+    new Date().toISOString();
+
 }
 
-function view(job) {
-  return {
-    jobId: job.jobId,
-    status: job.status,
-    stage: job.stage,
-    progress: job.progress,
+// ======================================================
+// PHOTO PROCESSING
+// ======================================================
 
-    completedScenes:
-      job.completedScenes || 0,
+function getPhotos(photos = []) {
 
-    totalScenes:
-      job.totalScenes || 0,
+  return photos
+    .slice(0, 4)
+    .filter(photo => photo && photo.data)
+    .map(photo => {
 
-    message: job.message,
+      let data = String(photo.data);
 
-    storyboard:
-      job.storyboard || null,
+      if (data.includes(",")) {
 
-    videoUrl:
-      job.videoUrl || null,
+        data = data.split(",").pop();
 
-    error:
-      job.error || null,
+      }
 
-    updatedAt:
-      job.updatedAt
-  };
+      return {
+        inlineData: {
+          mimeType:
+            photo.mimeType ||
+            photo.type ||
+            "image/jpeg",
+
+          data
+        }
+      };
+
+    });
+
 }
 
+// ======================================================
+// GEMINI STORYBOARD
+// ======================================================
 
-/* =========================================
-   IMAGE PROCESSING
-========================================= */
+function parseJSON(text) {
 
-function imagePart(photo) {
-  const raw = String(
-    photo?.data || ""
-  ).replace(
-    /^data:image\/[^;]+;base64,/,
-    ""
+  const clean =
+    String(text)
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+
+  if (start === -1 || end === -1) {
+
+    throw new Error(
+      "Gemini tidak menghasilkan JSON storyboard."
+    );
+
+  }
+
+  return JSON.parse(
+    clean.substring(start, end + 1)
   );
 
-  if (!raw) return null;
-
-  return {
-    inlineData: {
-      mimeType:
-        photo.mimeType ||
-        photo.type ||
-        "image/jpeg",
-
-      data: raw
-    }
-  };
 }
 
-function imagePartRaw(photo) {
-  return {
-    mimeType:
-      photo.mimeType ||
-      photo.type ||
-      "image/jpeg",
+async function generateStoryboard(
+  config,
+  photos,
+  job
+) {
 
-    data: String(
-      photo.data || ""
-    ).replace(
-      /^data:image\/[^;]+;base64,/,
-      ""
-    )
-  };
-}
+  if (!gemini) {
 
-
-/* =========================================
-   JSON EXTRACTION
-========================================= */
-
-function extractJSON(text) {
-  try {
-    return JSON.parse(text);
-  } catch (_) {}
-
-  const match =
-    String(text).match(/\{[\s\S]*\}/);
-
-  if (!match) {
     throw new Error(
-      "Gemini storyboard response bukan JSON."
+      "GEMINI_API_KEY belum dikonfigurasi."
     );
+
   }
 
-  return JSON.parse(match[0]);
-}
-
-
-/* =========================================
-   GEMINI STORYBOARD
-========================================= */
-
-async function makeStoryboard(config, photos) {
-  if (!ai) {
-    throw new Error(
-      "GEMINI_API_KEY tiada dalam Render Environment."
-    );
-  }
+  const photoParts = getPhotos(photos);
 
   const prompt = `
-Create a professional commercial storyboard.
-Return VALID JSON ONLY. No markdown.
+You are an expert commercial advertising director.
 
-Language: Bahasa Melayu.
+Create a professional advertising storyboard
+for a premium commercial video.
 
-Product:
-${config.product || "Product"}
+Return ONLY JSON in this format:
 
-Brand:
-${config.brand || "Kecik Empire"}
-
-Tagline:
-${config.tagline || ""}
-
-CTA:
-${config.cta || ""}
-
-Duration:
-${config.duration || 30} seconds
-
-Aspect ratio:
-${config.ratio || "9:16"}
-
-Style:
-${config.style || "cinematic premium"}
-
-Music:
-${config.music || ""}
-
-Voice:
-${config.voice || ""}
-
-Creative direction:
-${config.extra || config.prompt || ""}
-
-Create ${MAX_SCENES} scenes.
-
-Return JSON:
 {
-  "title": "...",
-  "product_consistency": "...",
-  "global_negative_prompt": "...",
-  "scenes": [
-    {
-      "scene_number": 1,
-      "duration_seconds": 8,
-      "title": "...",
-      "visual": "...",
-      "camera": "...",
-      "lighting": "...",
-      "action": "...",
-      "voiceover": "...",
-      "on_screen_text": "...",
-      "sound_design": "...",
-      "veo_prompt": "..."
-    }
-  ]
+ "title":"Campaign title",
+ "scenes":[
+  {
+   "number":1,
+   "duration":6,
+   "visual":"Visual description",
+   "camera":"Camera movement",
+   "prompt":"Detailed cinematic Veo prompt",
+   "voiceover":"Voiceover"
+  }
+ ]
 }
 
-Each veo_prompt must be detailed and standalone.
-Maintain product appearance based on attached photos.
+Requirements:
+- Exactly 4 scenes.
+- Realistic cinematic commercial.
+- Product appearance consistent.
+- Professional camera movements.
+- No text overlays inside generated footage.
+- No watermark.
+- Each prompt must be standalone.
+
+Product: ${config.product || "Product"}
+Tagline: ${config.tagline || ""}
+Style: ${config.style || "Premium cinematic"}
+Audience: ${config.audience || "General"}
+Aspect ratio: ${config.ratio || "16:9"}
 `;
 
-  const parts = [
-    ...photos
-      .slice(0, 4)
-      .map(imagePart)
-      .filter(Boolean),
-
-    { text: prompt }
+  const models = [
+    GEMINI_MODEL,
+    GEMINI_FALLBACK_MODEL
   ];
 
-  const response = await smartRetry(
-    () =>
-      ai.models.generateContent({
-        model: STORYBOARD_MODEL,
+  let result;
+  let lastError;
 
-        contents: [
-          {
-            role: "user",
-            parts
+  for (const model of models) {
+
+    try {
+
+      result = await smartRetry(
+        () => gemini.models.generateContent({
+
+          model,
+
+          contents: [
+            ...photoParts,
+            prompt
+          ],
+
+          config: {
+            responseMimeType: "application/json"
           }
-        ],
 
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.65
-        }
-      })
-  );
+        }),
+
+        `Storyboard ${model}`,
+
+        job
+      );
+
+      break;
+
+    } catch (error) {
+
+      lastError = error;
+
+      console.warn(
+        "Gemini model failed:",
+        model,
+        errorMessage(error)
+      );
+
+    }
+
+  }
+
+  if (!result) {
+
+    throw lastError ||
+      new Error("Semua model Gemini gagal.");
+
+  }
 
   const storyboard =
-    extractJSON(response.text || "");
+    parseJSON(result.text);
 
   if (
     !Array.isArray(storyboard.scenes) ||
     !storyboard.scenes.length
   ) {
+
     throw new Error(
-      "Storyboard tidak mengandungi scenes."
+      "Storyboard tidak mempunyai scene."
     );
+
   }
 
   storyboard.scenes =
-    storyboard.scenes.slice(
-      0,
-      MAX_SCENES
-    );
+    storyboard.scenes
+      .slice(0, 4)
+      .map((scene, index) => ({
+
+        number: index + 1,
+
+        duration:
+          Number(scene.duration) || 6,
+
+        visual:
+          scene.visual || "",
+
+        camera:
+          scene.camera || "",
+
+        prompt:
+          scene.prompt ||
+          scene.visual ||
+          config.product,
+
+        voiceover:
+          scene.voiceover || ""
+
+      }));
 
   return storyboard;
+
 }
 
+// ======================================================
+// VEO GENERATION
+// ======================================================
 
-/* =========================================
-   GOOGLE VEO VIDEO GENERATION
-========================================= */
-
-async function generateVeoClip(
-  prompt,
-  image,
-  destination,
-  ratio,
+async function generateVeoVideo(
+  scene,
+  index,
+  config,
   job
 ) {
-  if (!ai) {
+
+  if (!veo) {
+
     throw new Error(
-      "Gemini API belum dikonfigurasi."
+      "Google Cloud Vertex AI belum dikonfigurasi."
     );
+
   }
 
-  console.log(
-    "[VEO] Starting video generation..."
-  );
+  if (!VEO_GCS_BUCKET) {
+
+    throw new Error(
+      "VEO_GCS_BUCKET belum ditetapkan."
+    );
+
+  }
+
+  const prompt = `
+${scene.prompt}
+
+Visual: ${scene.visual}
+Camera: ${scene.camera}
+
+Product: ${config.product || "Product"}
+Tagline: ${config.tagline || ""}
+
+Professional commercial cinematography.
+Realistic lighting.
+Premium advertising style.
+Smooth camera movement.
+No subtitles.
+No text overlays.
+No watermark.
+`;
+
+  const outputUri =
+    `gs://${VEO_GCS_BUCKET}/kecik-empire/${job.id}/scene-${index + 1}/`;
 
   let operation = await smartRetry(
-    () =>
-      ai.models.generateVideos({
-        model: VEO_MODEL,
 
-        prompt,
+    () => veo.models.generateVideos({
 
-        ...(image
-          ? {
-              image: {
-                mimeType: image.mimeType,
+      model: VEO_MODEL,
 
-                imageBytes:
-                  Buffer.from(
-                    image.data,
-                    "base64"
-                  )
-              }
-            }
-          : {}),
+      prompt,
 
-        config: {
-          numberOfVideos: 1,
-          durationSeconds: 8,
+      config: {
 
-          aspectRatio:
-            ratio === "16:9"
-              ? "16:9"
-              : "9:16",
+        aspectRatio:
+          config.ratio || "16:9",
 
-          resolution: "720p"
-        }
-      }),
-    {
-      attempts: 4,
-      base: 5000,
-      cap: 45000
-    }
+        durationSeconds:
+          Math.max(
+            5,
+            Math.min(
+              8,
+              Number(scene.duration) || 6
+            )
+          ),
+
+        numberOfVideos: 1,
+
+        outputGcsUri: outputUri
+
+      }
+
+    }),
+
+    `Veo Scene ${index + 1}`,
+
+    job
+
   );
 
-  let polls = 0;
+  const deadline =
+    Date.now() + JOB_TIMEOUT;
 
   while (!operation.done) {
-    polls++;
 
-    if (polls > 180) {
+    if (Date.now() > deadline) {
+
       throw new Error(
-        "Veo timeout selepas 30 minit."
+        `Veo scene ${index + 1} timeout.`
       );
+
     }
 
-    patch(job, {
+    updateJob(job, {
+
+      stage: "veo_render",
+
       message:
-        `Veo sedang render video... (${polls})`
+        `Rendering scene ${index + 1}/${job.totalScenes}`
+
     });
 
-    await sleep(10000);
+    await sleep(15000);
 
     operation = await smartRetry(
-      () =>
-        ai.operations.getVideosOperation({
-          operation
-        }),
-      {
-        attempts: 4,
-        base: 2500
-      }
+
+      () => veo.operations.get({
+        operation
+      }),
+
+      `Veo polling ${index + 1}`,
+
+      job
+
     );
+
   }
 
   if (operation.error) {
+
     throw new Error(
-      operation.error.message ||
       JSON.stringify(operation.error)
     );
+
   }
 
-  const generatedVideo =
-    operation.response
-      ?.generatedVideos?.[0]?.video;
+  const generated =
+    operation.response?.generatedVideos?.[0] ||
+    operation.result?.generatedVideos?.[0];
 
-  if (!generatedVideo) {
+  const uri =
+    generated?.video?.uri;
+
+  if (!uri) {
+
     throw new Error(
-      "Veo selesai tetapi video tidak ditemui."
+      "Veo tidak memulangkan video URI."
     );
+
   }
 
-  console.log(
-    "[VEO] Downloading generated video..."
-  );
+  return uri;
 
-  await smartRetry(
-    () =>
-      ai.files.download({
-        file: generatedVideo,
-        downloadPath: destination
-      }),
-    {
-      attempts: 4,
-      base: 3000
-    }
-  );
-
-  const stat =
-    await fs.stat(destination);
-
-  if (stat.size < 10000) {
-    throw new Error(
-      "Fail video terlalu kecil atau tidak sah."
-    );
-  }
-
-  return destination;
 }
 
+// ======================================================
+// DOWNLOAD VIDEO FROM GOOGLE CLOUD STORAGE
+// ======================================================
 
-/* =========================================
-   FFMPEG ASSEMBLY
-========================================= */
-
-async function ffmpegAssemble(
-  clips,
-  output,
-  ratio
+async function downloadVideo(
+  uri,
+  destination
 ) {
-  const folder =
-    path.dirname(output);
 
-  const concatFile =
-    path.join(folder, "concat.txt");
+  const match =
+    uri.match(/^gs:\/\/([^/]+)\/(.+)$/);
 
-  const normalizedFile =
-    path.join(folder, "normalized.mp4");
+  if (match) {
 
-  const listContent =
-    clips.map(
-      file =>
-        `file '${file.replace(/'/g, "'\\''")}'`
-    ).join("\n");
+    await storage
+      .bucket(match[1])
+      .file(match[2])
+      .download({
+        destination
+      });
 
-  await fs.writeFile(
-    concatFile,
-    listContent
+    return;
+
+  }
+
+  if (uri.startsWith("https://")) {
+
+    const response =
+      await fetch(uri);
+
+    if (!response.ok) {
+
+      throw new Error(
+        `Video download HTTP ${response.status}`
+      );
+
+    }
+
+    const buffer =
+      Buffer.from(
+        await response.arrayBuffer()
+      );
+
+    fs.writeFileSync(
+      destination,
+      buffer
+    );
+
+    return;
+
+  }
+
+  throw new Error(
+    "Video URI tidak sah."
   );
 
-  const filter =
-    ratio === "16:9"
-      ? "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-      : "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2";
+}
 
-  console.log(
-    "[FFMPEG] Combining video clips..."
+// ======================================================
+// FFMPEG ASSEMBLY
+// ======================================================
+
+async function assembleMP4(
+  clips,
+  output
+) {
+
+  if (!clips.length) {
+
+    throw new Error(
+      "Tiada klip video untuk assembly."
+    );
+
+  }
+
+  const concatFile =
+    path.join(
+      path.dirname(output),
+      "concat.txt"
+    );
+
+  const list =
+    clips
+      .map(file =>
+        `file '${file.replace(/'/g, "'\\''")}'`
+      )
+      .join("\n");
+
+  fs.writeFileSync(
+    concatFile,
+    list
   );
 
   await execFileAsync(
+
     "ffmpeg",
+
     [
+
       "-y",
 
-      "-f", "concat",
-      "-safe", "0",
+      "-f",
+      "concat",
 
-      "-i", concatFile,
+      "-safe",
+      "0",
 
-      "-vf", filter,
+      "-i",
+      concatFile,
 
-      "-r", "30",
+      "-c:v",
+      "libx264",
 
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-crf", "21",
+      "-preset",
+      "veryfast",
 
-      "-c:a", "aac",
-      "-b:a", "128k",
+      "-crf",
+      "22",
 
-      "-movflags", "+faststart",
+      "-pix_fmt",
+      "yuv420p",
 
-      normalizedFile
+      "-c:a",
+      "aac",
+
+      "-b:a",
+      "128k",
+
+      "-movflags",
+      "+faststart",
+
+      output
+
     ],
+
     {
-      timeout: 30 * 60 * 1000
+      timeout: JOB_TIMEOUT
     }
+
   );
 
-  await fs.rename(
-    normalizedFile,
-    output
-  );
-
-  await fs.rm(
-    concatFile,
-    { force: true }
-  );
-
-  return output;
 }
 
+// ======================================================
+// COMPLETE PRODUCTION JOB
+// ======================================================
 
-/* =========================================
-   PRODUCTION JOB
-========================================= */
-
-async function runJob(
+async function runProduction(
   job,
   config,
   photos
 ) {
-  const workDirectory =
-    path.join(
-      os.tmpdir(),
-      "kecik-" + job.jobId
+
+  const temp =
+    fs.mkdtempSync(
+      path.join(
+        os.tmpdir(),
+        `kecik-${job.id}-`
+      )
     );
 
   try {
-    await fs.mkdir(
-      workDirectory,
-      { recursive: true }
-    );
 
-    patch(job, {
+    // STEP 1: STORYBOARD
+
+    updateJob(job, {
+
       status: "processing",
+
       stage: "storyboard",
+
       progress: 5,
+
       message:
-        "Membina storyboard Gemini..."
+        "Generating storyboard with Gemini..."
+
     });
 
     const storyboard =
-      await makeStoryboard(
+      await generateStoryboard(
         config,
-        photos
+        photos,
+        job
       );
 
-    patch(job, {
+    updateJob(job, {
+
       storyboard,
+
       totalScenes:
         storyboard.scenes.length,
 
-      status: "processing",
-      stage: "veo_render",
-      progress: 10,
+      stage: "storyboard_ready",
+
+      progress: 15,
 
       message:
-        "Storyboard siap. Menjana video Veo..."
+        "Storyboard completed."
+
     });
+
+    // STEP 2: VEO RENDER
 
     const clips = [];
 
     for (
-      let index = 0;
-      index < storyboard.scenes.length;
-      index++
+      let i = 0;
+      i < storyboard.scenes.length;
+      i++
     ) {
-      const scene =
-        storyboard.scenes[index];
 
-      const scenePrompt =
-        scene.veo_prompt ||
-        scene.veoPrompt ||
-        scene.visual ||
-        scene.description ||
-        scene.title;
+      updateJob(job, {
 
-      const prompt = `
-${scenePrompt}
-
-Commercial product:
-${config.product || ""}
-
-Brand:
-${config.brand || "Kecik Empire"}
-
-Maintain identical product appearance.
-Premium commercial cinematography.
-Clean composition.
-Avoid text/logo artifacts.
-
-Product consistency:
-${storyboard.product_consistency || ""}
-
-Negative prompt:
-${storyboard.global_negative_prompt || ""}
-`;
-
-      const clipPath =
-        path.join(
-          workDirectory,
-          `scene-${String(index + 1).padStart(2, "0")}.mp4`
-        );
-
-      patch(job, {
         stage: "veo_render",
 
         progress:
-          10 +
+          15 +
           Math.round(
-            (index / storyboard.scenes.length) * 65
+            i /
+            storyboard.scenes.length *
+            70
           ),
 
-        completedScenes: index,
-
         message:
-          `Render scene ${index + 1}/${storyboard.scenes.length}...`
+          `Rendering scene ${i + 1}`
+
       });
 
-      await generateVeoClip(
-        prompt,
+      const uri =
+        await generateVeoVideo(
+          storyboard.scenes[i],
+          i,
+          config,
+          job
+        );
 
-        photos[0]
-          ? imagePartRaw(photos[0])
-          : null,
+      const clip =
+        path.join(
+          temp,
+          `scene-${i + 1}.mp4`
+        );
 
-        clipPath,
-
-        config.ratio,
-
-        job
+      await downloadVideo(
+        uri,
+        clip
       );
 
-      clips.push(clipPath);
+      clips.push(clip);
 
-      patch(job, {
-        completedScenes: index + 1,
+      updateJob(job, {
 
-        progress:
-          10 +
-          Math.round(
-            ((index + 1) / storyboard.scenes.length) * 65
-          ),
+        completedScenes:
+          clips.length
 
-        message:
-          `Scene ${index + 1}/${storyboard.scenes.length} selesai.`
       });
+
     }
 
-    patch(job, {
-      stage: "ffmpeg",
-      progress: 80,
+    // STEP 3: FFMPEG
+
+    updateJob(job, {
+
+      stage: "assembly",
+
+      progress: 90,
+
       message:
-        "FFmpeg sedang menyatukan video..."
+        "FFmpeg assembling final MP4..."
+
     });
 
-    const outputDirectory =
-      path.join(__dirname, "outputs");
+    const finalVideo =
+      path.join(
+        temp,
+        "final.mp4"
+      );
 
-    await fs.mkdir(
-      outputDirectory,
+    await assembleMP4(
+      clips,
+      finalVideo
+    );
+
+    // STEP 4: SAVE MP4
+
+    const videoFolder =
+      path.join(
+        __dirname,
+        "public",
+        "videos"
+      );
+
+    fs.mkdirSync(
+      videoFolder,
       { recursive: true }
     );
 
-    const finalName =
-      `${job.jobId}.mp4`;
+    const filename =
+      `${job.id}.mp4`;
 
-    const finalPath =
+    const savedVideo =
       path.join(
-        outputDirectory,
-        finalName
+        videoFolder,
+        filename
       );
 
-    await ffmpegAssemble(
-      clips,
-      finalPath,
-      config.ratio
+    fs.copyFileSync(
+      finalVideo,
+      savedVideo
     );
 
-    patch(job, {
+    // STEP 5: COMPLETE
+
+    updateJob(job, {
+
       status: "completed",
+
       stage: "completed",
+
       progress: 100,
+
+      message:
+        "Final MP4 completed successfully.",
+
+      videoUrl:
+        `/videos/${filename}`,
 
       completedScenes:
         clips.length,
 
-      videoUrl:
-        `/outputs/${finalName}`,
+      finishedAt:
+        new Date().toISOString()
 
-      message:
-        "MP4 sebenar siap dijana!"
     });
 
   } catch (error) {
+
     console.error(
-      "Production job failed:",
-      job.jobId,
+      "Production failed:",
       error
     );
 
-    patch(job, {
+    updateJob(job, {
+
       status: "failed",
+
       stage: "failed",
 
+      progress: 0,
+
       error:
-        safeError(error),
+        errorMessage(error),
 
       message:
-        safeError(error)
+        errorMessage(error),
+
+      finishedAt:
+        new Date().toISOString()
+
     });
 
   } finally {
-    await fs.rm(
-      workDirectory,
+
+    fs.rmSync(
+      temp,
       {
         recursive: true,
         force: true
       }
-    ).catch(() => {});
+    );
+
   }
+
 }
 
+// ======================================================
+// VIDEO FILES
+// ======================================================
 
-/* =========================================
-   HEALTH CHECK
-========================================= */
+app.use(
 
-app.get("/", (_req, res) => {
+  "/videos",
+
+  express.static(
+    path.join(
+      __dirname,
+      "public",
+      "videos"
+    )
+  )
+
+);
+
+// ======================================================
+// HEALTH CHECK
+// ======================================================
+
+app.get("/", (req, res) => {
+
   res.json({
+
     ok: true,
-    service: "Kecik Empire AI Factory",
+
+    service:
+      "kecik-empire-ai-factory",
+
     version: "3.5"
+
   });
+
 });
 
-app.get("/api/health", (_req, res) => {
+app.get("/api/health", (req, res) => {
+
   res.json({
+
     ok: true,
 
     service:
@@ -818,162 +999,226 @@ app.get("/api/health", (_req, res) => {
     version: "3.5",
 
     storyboardModel:
-      STORYBOARD_MODEL,
+      GEMINI_MODEL,
+
+    fallbackModel:
+      GEMINI_FALLBACK_MODEL,
 
     veoModel:
       VEO_MODEL,
 
     geminiConfigured:
-      Boolean(API_KEY),
+      Boolean(GEMINI_API_KEY),
 
-    time: now()
+    veoConfigured:
+      Boolean(
+        GOOGLE_CLOUD_PROJECT &&
+        VEO_GCS_BUCKET
+      ),
+
+    time:
+      new Date().toISOString()
+
   });
+
 });
 
+// ======================================================
+// STATUS API
+// ======================================================
 
-/* =========================================
-   START PRODUCTION
-========================================= */
+function statusHandler(req, res) {
 
-app.post(
-  "/api/production/start",
-  (req, res) => {
-    const body =
-      req.body || {};
+  const job =
+    jobs.get(
+      req.params.jobId
+    );
 
-    const config =
-      body.config || body;
+  if (!job) {
 
-    const photos =
-      Array.isArray(body.photos)
-        ? body.photos
-        : [];
+    return res.status(404).json({
 
-    if (!API_KEY) {
-      return res.status(500).json({
-        error:
-          "GEMINI_API_KEY belum ditetapkan di Render."
-      });
-    }
+      error:
+        "Job ID tidak dijumpai."
 
-    if (
-      !config.product &&
-      !config.prompt &&
-      !config.extra
-    ) {
-      return res.status(400).json({
-        error:
-          "Sila isi nama produk atau brief."
-      });
-    }
-
-    if (!photos.length) {
-      return res.status(400).json({
-        error:
-          "Muat naik sekurang-kurangnya satu foto produk."
-      });
-    }
-
-    const jobId =
-      crypto.randomUUID();
-
-    const job = {
-      jobId,
-
-      status: "queued",
-      stage: "queued",
-
-      progress: 0,
-
-      completedScenes: 0,
-      totalScenes: 0,
-
-      message:
-        "Job diterima.",
-
-      createdAt: now(),
-      updatedAt: now()
-    };
-
-    jobs.set(jobId, job);
-
-    res.status(202).json({
-      jobId,
-      status: "queued",
-      message: "Job accepted"
     });
 
-    runJob(
-      job,
-      config,
-      photos
-    ).catch(error => {
-      patch(job, {
-        status: "failed",
-        stage: "failed",
-        error: safeError(error),
-        message: safeError(error)
-      });
-    });
   }
+
+  res.json(job);
+
+}
+
+app.get(
+  "/production/status/:jobId",
+  statusHandler
 );
-
-
-/* =========================================
-   JOB STATUS
-========================================= */
 
 app.get(
   "/api/production/status/:jobId",
-  (req, res) => {
-    const job =
-      jobs.get(req.params.jobId);
-
-    if (!job) {
-      return res.status(404).json({
-        error:
-          "Job ID tidak ditemui. Server mungkin restart atau job telah tamat."
-      });
-    }
-
-    res.json(view(job));
-  }
+  statusHandler
 );
 
+// ======================================================
+// START PRODUCTION API
+// ======================================================
 
-/* =========================================
-   JOB CLEANUP
-========================================= */
+async function startProduction(
+  req,
+  res
+) {
 
-setInterval(() => {
-  const cutoff =
-    Date.now() -
-    JOB_TTL_HOURS * 3600000;
+  const config =
+    req.body?.config ||
+    req.body ||
+    {};
 
-  for (const [id, job] of jobs.entries()) {
-    if (
-      Date.parse(job.updatedAt) < cutoff
-    ) {
-      jobs.delete(id);
-    }
+  const photos =
+    Array.isArray(req.body?.photos)
+      ? req.body.photos
+      : [];
+
+  if (
+    !photos.some(
+      photo => photo && photo.data
+    )
+  ) {
+
+    return res.status(400).json({
+
+      error:
+        "Upload sekurang-kurangnya satu foto produk."
+
+    });
+
   }
-}, 30 * 60 * 1000).unref();
 
+  if (!GEMINI_API_KEY) {
 
-/* =========================================
-   SERVER START
-========================================= */
+    return res.status(500).json({
 
-app.listen(PORT, () => {
-  console.log(
-    `Kecik Empire API V3.5 running on ${PORT}`
+      error:
+        "GEMINI_API_KEY belum dikonfigurasi."
+
+    });
+
+  }
+
+  const id =
+    crypto.randomUUID();
+
+  const job = {
+
+    id,
+
+    jobId: id,
+
+    status: "queued",
+
+    stage: "queued",
+
+    progress: 0,
+
+    completedScenes: 0,
+
+    totalScenes: 0,
+
+    message:
+      "Job accepted.",
+
+    createdAt:
+      new Date().toISOString()
+
+  };
+
+  jobs.set(
+    id,
+    job
   );
 
-  console.log(
-    `Gemini Model: ${STORYBOARD_MODEL}`
+  res.status(202).json({
+
+    id,
+
+    jobId: id,
+
+    status: "queued",
+
+    message:
+      "Production job accepted."
+
+  });
+
+  runProduction(
+    job,
+    config,
+    photos
+  ).catch(error => {
+
+    updateJob(job, {
+
+      status: "failed",
+
+      stage: "failed",
+
+      error:
+        errorMessage(error)
+
+    });
+
+  });
+
+}
+
+app.post(
+  "/production/start",
+  startProduction
+);
+
+app.post(
+  "/api/production/start",
+  startProduction
+);
+
+// ======================================================
+// ERROR HANDLER
+// ======================================================
+
+app.use((error, req, res, next) => {
+
+  console.error(
+    "HTTP ERROR:",
+    error
   );
 
-  console.log(
-    `Veo Model: ${VEO_MODEL}`
-  );
+  if (res.headersSent) {
+
+    return next(error);
+
+  }
+
+  res.status(
+    error.status || 500
+  ).json({
+
+    error:
+      errorMessage(error)
+
+  });
+
 });
+
+// ======================================================
+// START SERVER
+// ======================================================
+
+app.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `Kecik Empire AI Factory V3.5 listening on ${PORT}`
+    );
+
+  }
+);
