@@ -1,7 +1,7 @@
 {
   "name": "kecik-empire-ai-factory-api",
   "version": "3.5.0",
-  "description": "Kecik Empire AI Factory - Automated AI Video Production Backend",
+  "description": "Kecik Empire AI Factory Video Production API",
   "type": "module",
   "scripts": {
     "start": "node server.js"
@@ -13,6 +13,7 @@
     "@google/genai": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0"
   }
 }
