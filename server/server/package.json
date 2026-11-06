@@ -1,6 +1,7 @@
 {
   "name": "kecik-empire-ai-factory-api",
-  "version": "3.3.0",
+  "version": "3.5.0",
+  "description": "Kecik Empire AI Factory - Automated AI Video Production Backend",
   "type": "module",
   "scripts": {
     "start": "node server.js"
