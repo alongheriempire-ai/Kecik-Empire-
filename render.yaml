@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: kecik-empire-ai-factory-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FRONTEND_ORIGINS
+        value: https://interactivelink.my,https://www.interactivelink.my
+      - key: GEMINI_STORYBOARD_MODEL
+        value: gemini-2.5-flash
