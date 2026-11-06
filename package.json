@@ -1,18 +1,15 @@
 {
   "name": "kecik-empire-ai-factory-api",
   "version": "3.5.1",
+  "private": true,
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=20"
-  },
+  "description": "Kecik Empire AI Factory backend",
+  "scripts": {"start":"node server.js", "check":"node --check server.js"},
+  "engines": {"node": ">=20"},
   "dependencies": {
-    "@google/genai": "^1.0.0",
+    "@google/genai": "^1.30.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
+    "express": "^5.1.0",
     "ffmpeg-static": "^5.2.0"
   }
 }
