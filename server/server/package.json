@@ -1,7 +1,7 @@
+```json
 {
   "name": "kecik-empire-ai-factory-api",
-  "version": "3.5.0",
-  "description": "Kecik Empire AI Factory Video Production API",
+  "version": "3.5.1",
   "type": "module",
   "scripts": {
     "start": "node server.js"
@@ -17,3 +17,4 @@
     "ffmpeg-static": "^5.2.0"
   }
 }
+```
