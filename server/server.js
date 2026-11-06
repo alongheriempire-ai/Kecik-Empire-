@@ -3,44 +3,546 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { randomUUID } from "node:crypto";
 import { GoogleGenAI } from "@google/genai";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+
 dotenv.config();
 
-const app=express();
-const PORT=process.env.PORT||8787;
-const FRONTEND_ORIGINS=(process.env.FRONTEND_ORIGINS||"*").split(",").map(x=>x.trim());
-app.use(cors({origin:(origin,cb)=>{if(!origin||FRONTEND_ORIGINS.includes("*")||FRONTEND_ORIGINS.includes(origin))return cb(null,true);cb(new Error("Origin not allowed by FRONTEND_ORIGINS"));}}));
-app.use(express.json({limit:"30mb"}));
-const jobs=new Map();
-const ai=new GoogleGenAI({apiKey:process.env.GEMINI_API_KEY});
-const root=path.dirname(fileURLToPath(import.meta.url));
-const outDir=path.resolve(root,process.env.OUTPUT_DIR||"outputs");
-fs.mkdirSync(outDir,{recursive:true});
+const app = express();
 
-app.get("/",(_,res)=>res.json({service:"Kecik Empire AI Factory API",version:"3.3",health:"/api/health"}));
-app.get("/api/health",(_,res)=>res.json({ok:true,service:"kecik-empire-ai-factory",version:"3.3",time:new Date().toISOString()}));
-app.get("/api/production/status/:id",(req,res)=>{const j=jobs.get(req.params.id);if(!j)return res.status(404).json({error:"Job ID not found"});res.json(j);});
-app.post("/api/production/start",async(req,res)=>{
-  try{
-    const {config={},photos=[],geminiApiKey}=req.body||{};
-    if(!photos.length)return res.status(400).json({error:"Upload at least one product photo."});
-    const jobId=randomUUID();const job={jobId,status:"queued",stage:"queued",progress:0,completedScenes:0,totalScenes:0,message:"Job accepted. Creating storyboard…",createdAt:new Date().toISOString(),storyboard:null,finalVideoUrl:null};
-    jobs.set(jobId,job);res.status(202).json({jobId,status:"queued",message:"Job accepted"});
-    runJob(jobId,config,photos,geminiApiKey).catch(e=>{const j=jobs.get(jobId);if(j){j.status="failed";j.stage="failed";j.error=e.message;j.message=e.message;}console.error("Job failed",jobId,e);});
-  }catch(e){res.status(500).json({error:e.message});}
+const PORT = Number(process.env.PORT || 8787);
+
+const MODEL =
+  process.env.GEMINI_STORYBOARD_MODEL || "gemini-3.8-flash";
+
+const MAX_RETRIES = Math.max(
+  0,
+  Number(process.env.GEMINI_MAX_RETRIES ?? 3)
+);
+
+const RETRY_BASE_MS = Math.max(
+  500,
+  Number(process.env.GEMINI_RETRY_BASE_MS ?? 3000)
+);
+
+// ======================================================
+// MIDDLEWARE
+// ======================================================
+
+app.use(
+  cors({
+    origin: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+  })
+);
+
+app.use(
+  express.json({
+    limit: process.env.JSON_BODY_LIMIT || "25mb"
+  })
+);
+
+// ======================================================
+// JOB STORAGE
+// ======================================================
+
+const jobs = new Map();
+
+// ======================================================
+// GEMINI CLIENT
+// ======================================================
+
+const ai = () => {
+  const key = process.env.GEMINI_API_KEY;
+
+  if (!key) {
+    throw new Error(
+      "GEMINI_API_KEY belum ditetapkan dalam Render Environment."
+    );
+  }
+
+  return new GoogleGenAI({
+    apiKey: key
+  });
+};
+
+// ======================================================
+// SMART RETRY SYSTEM
+// ======================================================
+
+const sleep = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+function isRetryable(error) {
+  const status = Number(
+    error?.status ||
+    error?.code ||
+    error?.error?.code ||
+    0
+  );
+
+  const message = String(
+    error?.message ||
+    error?.error?.message ||
+    ""
+  ).toLowerCase();
+
+  return (
+    [408, 429, 500, 502, 503, 504].includes(status) ||
+    /temporar|high demand|overloaded|unavailable|rate limit|resource exhausted|internal error/.test(
+      message
+    )
+  );
+}
+
+function errorStatus(error) {
+  const status = Number(
+    error?.status ||
+    error?.code ||
+    error?.error?.code ||
+    0
+  );
+
+  return status >= 400 && status <= 599
+    ? status
+    : 500;
+}
+
+async function generateWithRetry(
+  model,
+  contents,
+  config,
+  job
+) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      job.retryAttempt = attempt;
+
+      job.message = attempt
+        ? `Gemini sibuk. Percubaan semula ${attempt}/${MAX_RETRIES}...`
+        : "Menghubungi Gemini...";
+
+      job.updatedAt = new Date().toISOString();
+
+      return await ai().models.generateContent({
+        model,
+        contents,
+        config
+      });
+
+    } catch (error) {
+      lastError = error;
+
+      if (
+        attempt >= MAX_RETRIES ||
+        !isRetryable(error)
+      ) {
+        throw error;
+      }
+
+      const waitMs =
+        RETRY_BASE_MS * (2 ** attempt) +
+        Math.floor(Math.random() * 500);
+
+      job.message =
+        `Gemini sementara tidak tersedia (${errorStatus(error)}). ` +
+        `Cuba semula ${attempt + 1}/${MAX_RETRIES} ` +
+        `dalam ${Math.ceil(waitMs / 1000)} saat.`;
+
+      job.updatedAt = new Date().toISOString();
+
+      console.warn(
+        `Gemini retry ${attempt + 1}/${MAX_RETRIES}:`,
+        error.message
+      );
+
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError;
+}
+
+// ======================================================
+// HEALTH CHECK
+// ======================================================
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "kecik-empire-ai-factory",
+    version: "3.4"
+  });
 });
 
-async function runJob(id,cfg,photos,keyOverride){
- const j=jobs.get(id);j.status="processing";j.stage="storyboard";j.message="Generating storyboard with Gemini";j.progress=5;
- const client=keyOverride?new GoogleGenAI({apiKey:keyOverride}):ai;
- const prompt=`Create a ${cfg.duration||30}-second ${cfg.ratio||"9:16"} commercial storyboard in JSON. Product: ${cfg.product||"product"}. Tagline: ${cfg.tagline||""}. CTA: ${cfg.cta||""}. Style: ${cfg.style||""}. Music: ${cfg.music||""}. Voice: ${cfg.voice||""}. Direction: ${cfg.extra||""}. Preserve exact product appearance from supplied reference photos; do not invent ingredients or alter packaging. Output {"title":"...","scenes":[{"time":"0-5s","title":"...","visual":"...","veoPrompt":"..."}]}. Return only JSON.`;
- const parts=[{text:prompt},...photos.slice(0,4).map(p=>({inlineData:{mimeType:p.mimeType||"image/jpeg",data:p.data}}))];
- const response=await client.models.generateContent({model:process.env.GEMINI_STORYBOARD_MODEL||"gemini-3.0-flash",contents:[{role:"user",parts}],config:{responseMimeType:"application/json"}});
- let story=JSON.parse(response.text);j.storyboard=story;j.totalScenes=story.scenes?.length||0;j.stage="storyboard_ready";j.message="Storyboard ready. Video rendering requires configured Veo workflow.";j.progress=15;
- // Deployment-safe honest state: no fabricated completed MP4.
- j.status="awaiting_video_provider";j.stage="provider_required";j.message="Storyboard generated. Configure Veo rendering adapter and FFmpeg pipeline to create MP4.";
- j.updatedAt=new Date().toISOString();
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "kecik-empire-ai-factory",
+    version: "3.4",
+    model: MODEL
+  });
+});
+
+app.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    version: "3.4",
+    model: MODEL
+  });
+});
+
+// ======================================================
+// START PRODUCTION
+// ======================================================
+
+app.post(
+  [
+    "/production/start",
+    "/api/production/start"
+  ],
+  (req, res) => {
+    const {
+      config = {},
+      photos = []
+    } = req.body || {};
+
+    if (
+      !Array.isArray(photos) ||
+      photos.length === 0
+    ) {
+      return res.status(400).json({
+        error: "Muat naik sekurang-kurangnya satu gambar produk."
+      });
+    }
+
+    const jobId = randomUUID();
+
+    const job = {
+      jobId,
+
+      status: "queued",
+      stage: "queued",
+      progress: 0,
+
+      completedScenes: 0,
+      totalScenes: 0,
+
+      message:
+        "Job diterima. Menyediakan storyboard...",
+
+      storyboard: null,
+      videoUrl: null,
+      error: null,
+
+      retryAttempt: 0,
+
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    jobs.set(jobId, job);
+
+    res.status(202).json({
+      jobId,
+      status: job.status,
+      message: job.message
+    });
+
+    runJob(jobId, config, photos)
+      .catch((error) => {
+        const currentJob = jobs.get(jobId);
+
+        if (currentJob) {
+          currentJob.status = "failed";
+          currentJob.stage = "failed";
+
+          currentJob.error =
+            error.message || "Unknown error";
+
+          currentJob.message =
+            currentJob.error;
+
+          currentJob.updatedAt =
+            new Date().toISOString();
+        }
+
+        console.error(
+          `Job failed ${jobId}:`,
+          error
+        );
+      });
+  }
+);
+
+// ======================================================
+// JOB STATUS
+// ======================================================
+
+app.get(
+  [
+    "/production/status/:jobId",
+    "/api/production/status/:jobId"
+  ],
+  (req, res) => {
+    const job = jobs.get(
+      req.params.jobId
+    );
+
+    if (!job) {
+      return res.status(404).json({
+        error: "Job tidak dijumpai."
+      });
+    }
+
+    return res.json({
+      ...job
+    });
+  }
+);
+
+// ======================================================
+// RUN STORYBOARD JOB
+// ======================================================
+
+async function runJob(
+  jobId,
+  config,
+  photos
+) {
+  const job = jobs.get(jobId);
+
+  if (!job) return;
+
+  job.status = "processing";
+  job.stage = "storyboard";
+  job.progress = 5;
+
+  job.message =
+    "Menghasilkan storyboard menggunakan Gemini...";
+
+  job.updatedAt =
+    new Date().toISOString();
+
+  const product =
+    config.product ||
+    config.productName ||
+    "produk";
+
+  const duration =
+    Number(config.duration || 30);
+
+  const ratio =
+    config.ratio ||
+    config.aspectRatio ||
+    "9:16";
+
+  const language =
+    config.language ||
+    "Bahasa Melayu";
+
+  // ----------------------------------------------------
+  // PROMPT
+  // ----------------------------------------------------
+
+  const prompt =
+    `Create a professional commercial video storyboard as STRICT JSON only.\n` +
+
+    `Product: ${product}.\n` +
+
+    `Campaign details: ${JSON.stringify(config)}.\n` +
+
+    `Target duration: ${duration} seconds.\n` +
+
+    `Aspect ratio: ${ratio}.\n` +
+
+    `Output language: ${language}.\n` +
+
+    `Return JSON object:\n` +
+
+    `{"title":"...","concept":"...","scenes":[{"scene":1,"duration":5,"visual":"...","camera":"...","action":"...","voiceover":"...","onScreenText":"...","sound":"...","imagePrompt":"..."}],"finalCta":"..."}.\n` +
+
+    `Make scenes add up approximately to ${duration} seconds.\n` +
+
+    `Include product close-ups, clear CTA, cinematic lighting and realistic production directions.\n` +
+
+    `No markdown fences.`;
+
+  // ----------------------------------------------------
+  // PRODUCT IMAGES
+  // ----------------------------------------------------
+
+  const imageParts = photos
+    .slice(0, 4)
+    .map((photo) => {
+      const raw =
+        typeof photo === "string"
+          ? photo
+          : (
+              photo?.data ||
+              photo?.base64 ||
+              photo?.url ||
+              ""
+            );
+
+      const mime =
+        (
+          typeof photo === "object" &&
+          photo?.mimeType
+        ) ||
+        "image/jpeg";
+
+      const match = String(raw).match(
+        /^data:(image\/[\w.+-]+);base64,(.+)$/
+      );
+
+      return {
+        inlineData: {
+          mimeType:
+            match?.[1] || mime,
+
+          data:
+            match?.[2] ||
+            String(raw).replace(
+              /^data:[^,]+,/,
+              ""
+            )
+        }
+      };
+    })
+    .filter(
+      (part) =>
+        part.inlineData.data
+    );
+
+  // ----------------------------------------------------
+  // GEMINI GENERATION
+  // ----------------------------------------------------
+
+  const response =
+    await generateWithRetry(
+      MODEL,
+
+      [
+        {
+          role: "user",
+
+          parts: [
+            {
+              text: prompt
+            },
+
+            ...imageParts
+          ]
+        }
+      ],
+
+      {
+        responseMimeType:
+          "application/json",
+
+        temperature: 0.7
+      },
+
+      job
+    );
+
+  // ----------------------------------------------------
+  // PARSE JSON
+  // ----------------------------------------------------
+
+  const text =
+    response.text || "";
+
+  let storyboard;
+
+  try {
+    storyboard = JSON.parse(
+      text
+        .replace(
+          /^```(?:json)?\s*/i,
+          ""
+        )
+        .replace(
+          /\s*```$/,
+          ""
+        )
+    );
+
+  } catch {
+    throw new Error(
+      "Gemini memberi output bukan JSON. Cuba jalankan semula."
+    );
+  }
+
+  // ----------------------------------------------------
+  // JOB RESULT
+  // ----------------------------------------------------
+
+  job.storyboard =
+    storyboard;
+
+  job.totalScenes =
+    Array.isArray(storyboard.scenes)
+      ? storyboard.scenes.length
+      : 0;
+
+  job.completedScenes =
+    job.totalScenes;
+
+  job.progress = 35;
+
+  job.stage =
+    "storyboard_ready";
+
+  job.status =
+    "awaiting_video_provider";
+
+  job.message =
+    "Storyboard berjaya. Renderer video (Veo/FFmpeg) belum disambungkan; MP4 belum dijana.";
+
+  job.updatedAt =
+    new Date().toISOString();
 }
-app.listen(PORT,()=>console.log(`Kecik Empire API V3.3 listening on ${PORT}`));
+
+// ======================================================
+// ERROR HANDLER
+// ======================================================
+
+app.use(
+  (err, _req, res, _next) => {
+    console.error(
+      "Request error:",
+      err
+    );
+
+    if (
+      err?.type === "entity.too.large"
+    ) {
+      return res.status(413).json({
+        error:
+          "Payload gambar terlalu besar. Kurangkan saiz gambar."
+      });
+    }
+
+    return res.status(500).json({
+      error:
+        err.message ||
+        "Ralat server."
+    });
+  }
+);
+
+// ======================================================
+// START SERVER
+// ======================================================
+
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `Kecik Empire API V3.4 listening on ${PORT} | model=${MODEL}`
+    );
+  }
+);
